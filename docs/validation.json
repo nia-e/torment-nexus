@@ -1,0 +1,218 @@
+{
+  "date": "2026-09-21",
+  "hardware": "Apple M4 Max, 36 GiB",
+  "rust_tests": 73,
+  "frontend_unit_tests": 18,
+  "browser_contract_tests": 9,
+  "clippy": "warnings denied, passed",
+  "engines": {
+    "tiny": {
+      "checks": {
+        "capture_position_and_shape": true,
+        "prefix_chunk_max_abs_error": 0.0018830299377441406,
+        "A_B_A_max_abs_error": 0.0,
+        "zero_disabled_capture_error": 0.0,
+        "zero_disabled_logits_error": 0.0,
+        "signed_injection_max_abs_error": 2.9802322387695312e-08,
+        "removed_rows_max_abs_error": 0.0,
+        "zero_generation_identical": true,
+        "live_boundary_ack": {
+          "event": "applied",
+          "first_token_index": 3,
+          "id": "16",
+          "revision": 1,
+          "v": 1
+        },
+        "switch_while_busy_rejected": true,
+        "cancellation": true
+      },
+      "runtime": {
+        "batch": 512,
+        "build": "Sep 21 2026 21:07:37",
+        "cache_k": "F16",
+        "cache_v": "F16",
+        "context": 512,
+        "engine_revision": "922be44aa6ac81b46f092716351cddff1c1733a7",
+        "microbatch": 128,
+        "n_embd": 64,
+        "n_layer": 5,
+        "peak_rss_bytes": 71417856,
+        "protocol": 1,
+        "system": "MTL : EMBED_LIBRARY = 1 | CPU : NEON = 1 | ARM_FMA = 1 | FP16_VA = 1 | DOTPROD = 1 | LLAMAFILE = 1 | ACCELERATE = 1 | REPACK = 1 | ",
+        "wrapper_sha256": "b116e97ad07f68a62dcd4afdf035f304663e4981e783db78b71359e6f9af93be"
+      }
+    },
+    "bonsai": {
+      "checks": {
+        "capture_position_and_shape": true,
+        "prefix_chunk_max_abs_error": 0.00565338134765625,
+        "A_B_A_max_abs_error": 0.0,
+        "zero_disabled_capture_error": 0.0,
+        "signed_injection_max_abs_error": 5.960464477539063e-08,
+        "removed_rows_max_abs_error": 0.0,
+        "zero_generation_identical": true,
+        "live_boundary_ack": {
+          "event": "applied",
+          "first_token_index": 3,
+          "id": "16",
+          "revision": 1,
+          "v": 1
+        },
+        "switch_while_busy_rejected": true,
+        "cancellation": true
+      },
+      "runtime": {
+        "batch": 512,
+        "build": "Sep 21 2026 21:07:37",
+        "cache_k": "F16",
+        "cache_v": "F16",
+        "context": 8192,
+        "engine_revision": "922be44aa6ac81b46f092716351cddff1c1733a7",
+        "microbatch": 128,
+        "n_embd": 5120,
+        "n_layer": 64,
+        "peak_rss_bytes": 8076705792,
+        "protocol": 1,
+        "system": "MTL : EMBED_LIBRARY = 1 | CPU : NEON = 1 | ARM_FMA = 1 | FP16_VA = 1 | DOTPROD = 1 | LLAMAFILE = 1 | ACCELERATE = 1 | REPACK = 1 | ",
+        "wrapper_sha256": "b116e97ad07f68a62dcd4afdf035f304663e4981e783db78b71359e6f9af93be"
+      }
+    }
+  },
+  "app_checks": {
+    "real_bonsai_download": "completed, pinned HF revision and LFS SHA256 verified",
+    "two_agent_concepts_extracted_previewed": true,
+    "live_two_axis_mix_baseline_chat": true,
+    "corrupt_import_rejected": "{\"error\":\"artifact checksum mismatch\"}",
+    "export_import_with_provenance": true,
+    "wrong_model_import_rejected": "{\"error\":\"vector manifest disagrees with index\"}",
+    "wrong_model_mix_rejected": "{\"error\":\"vector belongs to a different model fingerprint\"}",
+    "browser_json_roundtrip_bundle_import": true,
+    "hidden_missing_dataset_reference_rejected": "{\"error\":\"manifest artifact list omitted a typed dataset/stage/tensor/extraction/preview reference\"}",
+    "restart_reload": true,
+    "real_browser_repair_edit_version_extraction": true,
+    "real_browser_edit_reused_cloud_stages": true,
+    "real_browser_no_page_errors": true,
+    "final_packaged_generation_and_peak_rss": true
+  },
+  "cloud_recovery": {
+    "no_auto_retry": true,
+    "completed_checkpoints_unchanged": true,
+    "offline_resume_all_hashes_unchanged": true
+  },
+  "inference_recovery": {
+    "status": "interrupted",
+    "saved_tokens": 22,
+    "exact_resume_rejected": true
+  },
+  "real_browser_native": {
+    "signed_updates": [
+      [
+        1,
+        310
+      ],
+      [
+        2,
+        736
+      ]
+    ],
+    "cancelled_tokens": 960,
+    "baseline_tokens": 1024
+  },
+  "real_browser_chromium": "repair edit, local re-extraction, publication and reload; no new cloud attempt; no page errors",
+  "relocated_package": {
+    "no_node_or_rust_in_path": true,
+    "codex_model_discovery_count": 6,
+    "dynamic_dependencies": "system libraries only",
+    "final_peak_worker_rss_bytes": 8129576960,
+    "final_browser_memory_label": "Peak worker RSS - last sample",
+    "final_browser_page_errors": 0
+  },
+  "numerical_audit": {
+    "method": "independent NumPy mean-of-means, calibration, pole reversal and held-out AUC",
+    "vectors": [
+      {
+        "id": "5ead7e58-27ef-449c-a35e-e85adb171a17",
+        "pairs": 96,
+        "train": 72,
+        "diagnostic": 24,
+        "family_disjoint": true,
+        "poles_negate": true,
+        "scaling_verified": true,
+        "layers": [
+          {
+            "layer": 16,
+            "raw_max_abs_error": 7.450580596923828e-09,
+            "auc": 0.96875,
+            "calibration": 40.63418065193042
+          },
+          {
+            "layer": 25,
+            "raw_max_abs_error": 1.4901161193847656e-08,
+            "auc": 0.9704861111111112,
+            "calibration": 51.484605740777575
+          },
+          {
+            "layer": 35,
+            "raw_max_abs_error": 2.9802322387695312e-08,
+            "auc": 0.9357638888888888,
+            "calibration": 73.00199543854407
+          },
+          {
+            "layer": 44,
+            "raw_max_abs_error": 1.4901161193847656e-08,
+            "auc": 0.9149305555555556,
+            "calibration": 84.72101477983969
+          },
+          {
+            "layer": 54,
+            "raw_max_abs_error": 1.1920928955078125e-07,
+            "auc": 0.8819444444444444,
+            "calibration": 187.0026742897503
+          }
+        ]
+      },
+      {
+        "id": "bfa64f93-c057-4ffb-a6f0-96ef0ea2c467",
+        "pairs": 96,
+        "train": 72,
+        "diagnostic": 24,
+        "family_disjoint": true,
+        "poles_negate": true,
+        "scaling_verified": true,
+        "layers": [
+          {
+            "layer": 16,
+            "raw_max_abs_error": 7.450580596923828e-09,
+            "auc": 0.9913194444444444,
+            "calibration": 42.30749103701531
+          },
+          {
+            "layer": 25,
+            "raw_max_abs_error": 2.9802322387695312e-08,
+            "auc": 0.9826388888888888,
+            "calibration": 53.056676776792145
+          },
+          {
+            "layer": 35,
+            "raw_max_abs_error": 1.4901161193847656e-08,
+            "auc": 0.9548611111111112,
+            "calibration": 70.92430946404735
+          },
+          {
+            "layer": 44,
+            "raw_max_abs_error": 2.9802322387695312e-08,
+            "auc": 0.9444444444444444,
+            "calibration": 81.81930499413656
+          },
+          {
+            "layer": 54,
+            "raw_max_abs_error": 5.960464477539063e-08,
+            "auc": 0.9583333333333334,
+            "calibration": 182.0936745054954
+          }
+        ]
+      }
+    ],
+    "status": "passed"
+  }
+}

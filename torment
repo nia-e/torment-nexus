@@ -1,0 +1,10 @@
+#!/bin/sh
+# Source checkout launcher. The packaged launcher needs neither Node nor a compiler.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ ! -x "$root/target/release/torment-nexus" ] || [ ! -x "$root/engine/build/bin/torment-engine" ]; then
+    "$root/scripts/build-engine.sh"
+    (cd "$root" && cargo build --release --locked)
+fi
+exec "$root/target/release/torment-nexus" --worker "$root/engine/build/bin/torment-engine" "$@"
+
