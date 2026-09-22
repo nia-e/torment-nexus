@@ -24,7 +24,7 @@ try:
             break
     worker.call('unload')
     worker.call('load',path=str(Path('work/models/Ternary-Bonsai-2-27B-PQ2_0.gguf').resolve()),context=1024,gpu_layers=99,batch=128,microbatch=64)
-    ident=worker.send('generate',tools_enabled=True,messages=[{'role':'system','content':'You have a get_mix tool. To invoke it, emit exactly <torment_tool>{"name":"get_mix","arguments":{}}</torment_tool> and wait for its result.'},{'role':'user','content':'Use get_mix now.'}],sampling={'max_tokens':128,'temperature':0,'seed':42,'top_p':1},controls={'revision':0,'rows':[]})
+    ident=worker.send('generate',tools_enabled=True,messages=[{'role':'system','content':'You have a get_mix tool. To invoke it, emit exactly <steering_tool>{"name":"get_mix","arguments":{}}</steering_tool> and wait for its result.'},{'role':'user','content':'Use get_mix now.'}],sampling={'max_tokens':128,'temperature':0,'seed':42,'top_p':1},controls={'revision':0,'rows':[]})
     called=False
     while True:
         event=worker.recv()

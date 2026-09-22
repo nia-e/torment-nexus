@@ -1,8 +1,12 @@
 export type Json =
   null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Message = {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
+  tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[];
+  tool_call_id?: string;
+  name?: string;
+  reasoning_content?: string;
 };
 export type Axis = { vector_id: string; layer: number; percent: number };
 export type Sampling = {
@@ -52,7 +56,8 @@ export type Recipe = RecordBase & {
   extraction?: { method: "paper" | "completion"; readout_suffix: string };
   raw?: boolean;
   concept: string;
-  model_id: string;
+  model_id?: string; // Legacy creation metadata; recipes are shared across models.
+  draft?: boolean;
   parent_id?: string;
   version: number;
   design?: Json;
@@ -68,6 +73,7 @@ export type Job = RecordBase & {
   stage?: string;
   progress?: number;
   error?: string;
+  attention_dismissed?: boolean;
   recipe_id?: string;
   model_id?: string;
   run_id?: string;

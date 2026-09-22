@@ -233,7 +233,7 @@ impl App {
             ensure!(
                 matches!(
                     message["role"].as_str(),
-                    Some("system" | "user" | "assistant")
+                    Some("system" | "user" | "assistant" | "tool")
                 ),
                 "unsupported role"
             );
@@ -320,6 +320,7 @@ impl App {
         let result=async {
             let capabilities=self.ensure_model(job_id,field(&run,"model_id")?).await?;
             ensure!(run["self_tools_available"]!=true || capabilities["self_tools"]==true,"this worker lacks self-adjustment tools; rebuild or update the packaged engine");
+            ensure!(run["self_tools_available"]!=true || capabilities["tool_format"]=="steering-v1","this worker lacks the current steering-tool format; rebuild or update the packaged engine");
             ensure!(run["sampling"]["unbounded"]!=true || capabilities["unbounded_output"]==true,"this worker lacks context rollover; rebuild or update the packaged engine");
             let fingerprint=field(&run,"model_fingerprint")?;
             let vectors=self.load_vectors(&run["axes"],fingerprint)?;
@@ -337,13 +338,14 @@ impl App {
             self.engine_state.write().await["status"]=json!("running");
             let engine=self.engine().await?;
             let mut messages=run["messages"].as_array().unwrap().clone();
+            let native_tools=run["self_tools_available"]==true && run["raw"]!=true && capabilities["native_tools"]==true;
             if run["self_tools_available"] == true {
-                let instruction=self_tools::instruction(&self.mix_view(run_id)?);
+                let instruction=self_tools::instruction(&self.mix_view(run_id)?, native_tools);
                 if messages[0]["role"] == "system" {
                     messages[0]["content"]=json!(format!("{}{}", messages[0]["content"].as_str().unwrap(),instruction));
                 } else { messages.insert(0,json!({"role":"system","content":instruction})); }
             }
-            let (_,mut events)=engine.send_cancellable(json!({"id":run_id,"op":"generate","messages":messages,"raw":run["raw"],"sampling":run["sampling"],"tools_enabled":run["self_tools_available"]==true,"controls":{"revision":0,"rows":rows}}), &cancellation).await?;
+            let (_,mut events)=engine.send_cancellable(json!({"id":run_id,"op":"generate","messages":messages,"raw":run["raw"],"sampling":run["sampling"],"tools_enabled":run["self_tools_available"]==true,"tool_format":if native_tools {"llama-chat-v1"} else {"steering-v1"},"tools":if native_tools {self_tools::native_definitions()} else {json!([])},"controls":{"revision":0,"rows":rows}}), &cancellation).await?;
             let mut terminal=false;
             while let Some(event)=events.recv().await {
                 match event["event"].as_str(){
@@ -594,7 +596,7 @@ impl App {
                 .clone();
         }
         Ok(
-            json!({"run_id":run_id,"revision":latest["revision"],"self_modification":run["self_modification"]==true,"sliders":sliders,"applied":run["applied_controls"].as_array().and_then(|events|events.last()),"meaning":"percent of each layer's calibrated residual norm; finite signed values, no intensity claim"}),
+            json!({"run_id":run_id,"revision":latest["revision"],"self_modification":run["self_modification"]==true,"sliders":sliders,"applied":run["applied_controls"].as_array().and_then(|events|events.last()),"target":"local_model_generating_this_response","meaning":self_tools::SCALING}),
         )
     }
 
@@ -833,7 +835,10 @@ impl App {
         let recipe_id = id();
         recipe["imported_from_id"] = recipe["id"].clone();
         recipe["id"] = json!(recipe_id);
-        recipe["model_id"] = model["id"].clone();
+        recipe
+            .as_object_mut()
+            .context("invalid bundled recipe")?
+            .remove("model_id");
         recipe["created_at"] = json!(now_seconds());
         vector["recipe_id"] = json!(recipe_id);
         self.store.put_batch(&[
@@ -1225,6 +1230,18 @@ impl App {
             }
             "edit_recipe" => self.edit_recipe(&request),
             "edit_job_stage" => self.edit_job_stage(&request),
+            "dismiss_job_attention" => {
+                let job_id = field(&request, "job_id")?;
+                let job = self.record("jobs", job_id)?;
+                ensure!(
+                    matches!(job["status"].as_str(), Some("failed" | "interrupted")),
+                    "only failed or interrupted jobs need attention"
+                );
+                self.update("jobs", job_id, |job| {
+                    job["attention_dismissed"] = json!(true)
+                })?;
+                Ok(json!({"ok":true}))
+            }
             "retry_job" => {
                 let job_id = field(&request, "job_id")?;
                 let job = self.record("jobs", job_id)?;
@@ -1276,6 +1293,7 @@ impl App {
                     job["status"] = json!("queued");
                     job["error"] = Value::Null;
                     job["cancel_requested"] = json!(false);
+                    job["attention_dismissed"] = json!(false);
                 })?;
                 self.start_job(job_id.to_owned(), None)?;
                 Ok(json!({"job_id":job_id}))
@@ -1620,7 +1638,7 @@ impl App {
                         .as_str()
                         .map(|pid| self.record("recipes", pid))
                         .transpose()?;
-                    let recipe = json!({"id":recipe_id,"created_at":now_seconds(),"concept":request["concept"],"model_id":request["model_id"],
+                    let recipe = json!({"id":recipe_id,"created_at":now_seconds(),"concept":request["concept"],
                         "parent_id":request["parent_recipe_id"],"version":parent.as_ref().and_then(|p|p["version"].as_u64()).unwrap_or(0)+1,
                         "design":output.design,"dataset":prepared["pairs"],"dataset_hash":dataset_hash,"review":output.review,
                         "roles":output.roles,"stages":latest["details"]["stages"],"warnings":output.warnings,
@@ -1696,8 +1714,9 @@ impl App {
         } else {
             Extraction::from_record(&recipe)?
         };
+        // Recipes describe the shared text/method, not a model. The extraction
+        // job and resulting vector carry the target model and fingerprint.
         if raw == recipe["raw"].as_bool().unwrap_or(false)
-            && recipe["model_id"] == request["model_id"]
             && extraction == Extraction::from_record(&recipe)?
         {
             return Ok(recipe);
@@ -1710,7 +1729,7 @@ impl App {
         version["version"] = json!(recipe["version"].as_u64().unwrap_or(1) + 1);
         version["raw"] = json!(raw);
         version["extraction"] = serde_json::to_value(extraction)?;
-        version["model_id"] = request["model_id"].clone();
+        version.as_object_mut().unwrap().remove("model_id");
         version["edited_stage"] = json!("extraction-settings");
         job["recipe_id"] = json!(recipe_id);
         job["details"]["effective_recipe_id"] = json!(recipe_id);
@@ -2058,6 +2077,8 @@ impl App {
                 "extraction":job["request"]["extraction"],"preview_mode":job["request"]["preview_mode"]})
         };
         let mut snapshot = source;
+        // Compatibility default for callers forking a job without an explicit target.
+        snapshot["model_id"] = job["request"]["model_id"].clone();
         snapshot["source_job_id"] = job["id"].clone();
         snapshot["stages"] = job["details"]["stages"].clone();
         snapshot["roles"] = checkpoints
@@ -2074,6 +2095,14 @@ impl App {
     }
 
     fn fork_stage(self: &Arc<Self>, old: &Value, request: &Value) -> Result<Value> {
+        let model_id = if request.get("model_id").is_some() {
+            let model_id = field(request, "model_id")?;
+            self.record("models", model_id)?;
+            model_id
+        } else {
+            // Older recipes may retain their creation model as a legacy default.
+            field(old, "model_id").context("select a target model for downstream extraction")?
+        };
         let stage = field(request, "stage")?;
         let value = &request["value"];
         ensure!(
@@ -2094,6 +2123,7 @@ impl App {
         );
         let recipe_id = id();
         let mut edited = old.clone();
+        edited.as_object_mut().unwrap().remove("model_id");
         edited["id"] = json!(recipe_id);
         edited["parent_id"] = old["id"].clone();
         edited["version"] = json!(old["version"].as_u64().unwrap_or(1) + 1);
@@ -2136,12 +2166,12 @@ impl App {
             json!(self.store.artifacts().put_json(&override_value)?),
         );
         edited["stages"] = json!(stages);
-        let factory_request = json!({"concept":old["concept"],"model_id":old["model_id"],"roles":old["roles"],"raw":old["raw"],"parent_recipe_id":recipe_id,
+        let factory_request = json!({"concept":old["concept"],"model_id":model_id,"roles":old["roles"],"raw":old["raw"],"parent_recipe_id":recipe_id,
             "extraction":old["extraction"],"preview_mode":old["preview_mode"]});
         let job_id = id();
         let job = json!({"id":job_id,"created_at":now_seconds(),"kind":"factory","status":"queued",
             "stage":"queued","progress":0.0,"error":null,"request":factory_request,
-            "model_id":old["model_id"],"details":{"stages":stages,"extractions":{},"previews":{}}});
+            "model_id":model_id,"details":{"stages":stages,"extractions":{},"previews":{}}});
         self.store.put_batch(&[
             ("recipes", recipe_id.as_str(), edited),
             ("jobs", job_id.as_str(), job),
@@ -2698,11 +2728,22 @@ mod tests {
         let (_directory, app) = app();
         let recipe = json!({"id":"recipe","version":1,"model_id":"model","raw":false});
         app.store.put("recipes", "recipe", &recipe).unwrap();
+        // Switching targets reuses the same dataset/method without forking recipes.
+        for model_id in ["model", "second-model"] {
+            let request = json!({"recipe_id":"recipe","model_id":model_id});
+            let job_id = app.create_job("extract", &request).unwrap();
+            assert_eq!(
+                app.recipe_for_extraction(&job_id, &request).unwrap(),
+                recipe
+            );
+        }
+        assert_eq!(app.store.list("recipes").unwrap().len(), 1);
         let request = json!({"recipe_id":"recipe","model_id":"model","raw":true});
         let job_id = app.create_job("extract", &request).unwrap();
         let changed = app.recipe_for_extraction(&job_id, &request).unwrap();
         assert_eq!(changed["raw"], true);
         assert_eq!(changed["parent_id"], "recipe");
+        assert!(changed.get("model_id").is_none());
         assert_eq!(
             app.recipe_for_extraction(&job_id, &request).unwrap(),
             changed
@@ -2714,6 +2755,29 @@ mod tests {
         let request = json!({"recipe_id":"draft","model_id":"model"});
         let job_id = app.create_job("extract", &request).unwrap();
         assert!(app.recipe_for_extraction(&job_id, &request).is_err());
+    }
+
+    #[tokio::test]
+    async fn attention_dismissal_preserves_failure_and_survives_restart() {
+        let (directory, app) = app();
+        let job_id = app.create_job("extract", &json!({})).unwrap();
+        let dismiss = json!({"action":"dismiss_job_attention","job_id":job_id});
+        assert!(app.action(dismiss.clone()).await.is_err());
+        app.update("jobs", &job_id, |job| {
+            job["status"] = json!("interrupted");
+            job["error"] = json!("Saved partial work");
+        })
+        .unwrap();
+        app.action(dismiss).await.unwrap();
+        drop(app);
+        let job = Store::open(directory.path())
+            .unwrap()
+            .get("jobs", &job_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(job["attention_dismissed"], true);
+        assert_eq!(job["status"], "interrupted");
+        assert_eq!(job["error"], "Saved partial work");
     }
 
     #[test]
@@ -2845,8 +2909,11 @@ mod tests {
             "request":{"concept":"dry humor","model_id":"model","raw":false},
             "details":{"stages":stages,"extractions":{"old":"must-not-be-reused"}}});
         app.store.put("jobs", "source", &original).unwrap();
+        app.store
+            .put("models", "second-model", &json!({"id":"second-model"}))
+            .unwrap();
         let result = app
-            .edit_job_stage(&json!({"job_id":"source","stage":"writer_2","value":{"pairs":[]}}))
+            .edit_job_stage(&json!({"job_id":"source","model_id":"second-model","stage":"writer_2","value":{"pairs":[]}}))
             .unwrap();
         assert_eq!(app.record("jobs", "source").unwrap(), original);
         let recipe = app
@@ -2854,6 +2921,7 @@ mod tests {
             .unwrap();
         assert_eq!(recipe["source_job_id"], "source");
         assert_eq!(recipe["draft"], true);
+        assert!(recipe.get("model_id").is_none());
         for unaffected in ["design", "writer_1", "writer_3"] {
             assert_eq!(recipe["stages"][unaffected], stages[unaffected]);
         }
@@ -2870,6 +2938,8 @@ mod tests {
             .record("jobs", result["job_id"].as_str().unwrap())
             .unwrap();
         assert_eq!(job["details"]["extractions"], json!({}));
+        assert_eq!(job["model_id"], "second-model");
+        assert_eq!(job["request"]["model_id"], "second-model");
     }
 
     #[cfg(unix)]

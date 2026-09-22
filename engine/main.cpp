@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <sys/resource.h>
 
@@ -246,41 +247,59 @@ class Engine {
         }
     }
 
-    std::string render(const json & command) {
+    bool native_tools_supported() const {
+        if (!templates) return false;
+        const auto caps = common_chat_templates_get_caps(templates.get());
+        return caps.at("supports_tools") && caps.at("supports_tool_calls");
+    }
+
+    common_chat_params render_chat(const json & command, bool add_generation_prompt = true) {
         const auto & messages = command.at("messages");
         require(messages.is_array() && !messages.empty() && messages.size() <= 1024, "invalid messages");
         for (const auto & message : messages) {
             require(message.is_object() && message.contains("role") && message.at("role").is_string() &&
                     message.contains("content") && message.at("content").is_string(), "message requires text role and content");
             const auto role = message.at("role").get<std::string>();
-            require(role == "system" || role == "user" || role == "assistant", "unsupported message role");
+            require(role == "system" || role == "user" || role == "assistant" || role == "tool", "unsupported message role");
         }
         if (command.value("raw", false)) {
             // Preserve the explicitly supplied completion prefix byte-for-byte.
             if (messages.size() == 1 && messages.at(0).at("role") == "user") {
-                return messages.at(0).at("content").get<std::string>();
+                common_chat_params result;
+                result.prompt = messages.at(0).at("content").get<std::string>();
+                return result;
             }
             // Template-free conversation/factory contexts use a deliberately
             // plain, deterministic format, never an implicit model template.
             std::string prompt;
             for (const auto & message : messages) {
                 prompt += message.at("role").get<std::string>() + ": " +
-                          message.at("content").get<std::string>() + "\n\n";
+                          message.at("content").get<std::string>();
+                if (message.contains("tool_calls")) prompt += "\n" + message.at("tool_calls").dump();
+                prompt += "\n\n";
             }
-            return prompt + "assistant: ";
+            common_chat_params result;
+            result.prompt = prompt + (add_generation_prompt ? "assistant: " : "");
+            return result;
         }
         require(templates != nullptr, "model has no chat template; explicitly select raw completion mode");
         common_chat_templates_inputs inputs;
         inputs.enable_thinking = false;
-        inputs.add_generation_prompt = true;
+        inputs.add_generation_prompt = add_generation_prompt;
         inputs.now = std::chrono::system_clock::time_point{}; // deterministic render, recorded below
-        for (const auto & message : messages) {
-            common_chat_msg msg;
-            msg.role = message.at("role").get<std::string>();
-            msg.content = message.at("content").get<std::string>();
-            inputs.messages.push_back(std::move(msg));
+        inputs.messages = common_chat_msgs_parse_oaicompat(common_json::parse(messages.dump()));
+        if (command.value("tools_enabled", false) && command.value("tool_format", "steering-v1") == "llama-chat-v1") {
+            require(native_tools_supported(), "this model template does not support native tools");
+            inputs.tools = common_chat_tools_parse_oaicompat(common_json::parse(command.at("tools").dump()));
+            require(!inputs.tools.empty(), "native tools require function definitions");
+            inputs.parallel_tool_calls = false;
+            inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
         }
-        return common_chat_templates_apply(templates.get(), inputs).prompt;
+        return common_chat_templates_apply(templates.get(), inputs);
+    }
+
+    std::string render(const json & command) {
+        return render_chat(command).prompt;
     }
 
     std::vector<llama_token> tokenize(const std::string & text, bool allow_long = false) {
@@ -316,6 +335,56 @@ class Engine {
                 "ambiguous tool continuation markers");
         return {formatted.substr(a + assistant_marker.size(), b - a - assistant_marker.size()),
                 formatted.substr(b + result_marker.size())};
+    }
+
+    struct NativeContinuation {
+        std::string before, body, after;
+        common_chat_params chat;
+    };
+
+    // Render the actual tool role using llama.cpp, but append only the suffix:
+    // replaying the prefix after set_mix would change already-computed state.
+    // The sampled end-of-message token has not been decoded yet. Its spelling
+    // locates that boundary in the canonical template (including Gemma's inline
+    // tool-response marker). Fail explicitly if a template cannot be continued.
+    NativeContinuation native_continuation(const json & history, const json & assistant,
+                                          const json & result, const std::string & stop) {
+        json before = history;
+        auto framing_assistant = assistant;
+        // Some templates move assistant prose after its calls on serialization.
+        // It is already decoded: omit it only from this boundary probe, never
+        // from the persisted message or the actual inference state.
+        framing_assistant["content"] = "";
+        before["messages"].push_back(framing_assistant);
+        const auto previous = render_chat(before, false).prompt;
+        const auto boundary = previous.rfind(stop);
+        require(!stop.empty() && boundary != std::string::npos &&
+                previous.find_first_not_of(" \t\r\n", boundary + stop.size()) == std::string::npos,
+                "native tool template cannot locate its end-of-message boundary");
+        const std::string marker = "STEERING_RESULT_" + active_id + "_" + result.at("tool_call_id").get<std::string>();
+        json probe = before;
+        auto placeholder = result;
+        placeholder["content"] = marker;
+        probe["messages"].push_back(placeholder);
+        const auto framed = render_chat(probe).prompt;
+        const auto at = framed.find(marker);
+        require(at != std::string::npos && at >= boundary && framed.find(marker, at + 1) == std::string::npos &&
+                framed.compare(0, boundary, previous, 0, boundary) == 0,
+                "native tool template rewrites the preceding turn; cannot append safely");
+        before["messages"].push_back(result);
+        NativeContinuation continuation;
+        continuation.chat = render_chat(before);
+        continuation.before = framed.substr(boundary, at - boundary);
+        continuation.after = framed.substr(at + marker.size());
+        const auto & full = continuation.chat.prompt;
+        const auto tail = continuation.after.size();
+        require(full.size() >= at + tail && full.compare(0, at, framed, 0, at) == 0 &&
+                full.compare(full.size() - tail, tail, continuation.after) == 0,
+                "native tool template changed result framing");
+        // Keep the template's escaping, but never interpret tool-result data as
+        // special tokens. Only the surrounding template markers are privileged.
+        continuation.body = full.substr(at, full.size() - at - tail);
+        return continuation;
     }
 
     void decode(std::vector<llama_token> & tokens, size_t start, size_t count) {
@@ -411,9 +480,21 @@ class Engine {
         auto sampling = command.value("sampling", json::object());
         const bool unbounded = sampling.value("unbounded", false);
         const bool tools = command.value("tools_enabled", false);
+        const bool native = tools && !command.value("raw", false) && command.value("tool_format", "steering-v1") == "llama-chat-v1";
         const size_t maximum = unbounded ? std::numeric_limits<size_t>::max() : sampling.value("max_tokens", size_t(256));
         const size_t capacity = llama_n_ctx(context);
-        std::string rendered = render(command);
+        auto chat = render_chat(command);
+        common_chat_parser_params parser;
+        auto update_parser = [&] {
+            parser = common_chat_parser_params(chat);
+            parser.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
+            if (native) {
+                require(!chat.parser.empty(), "native tool template has no output parser");
+                parser.parser.load(chat.parser);
+            }
+        };
+        update_parser();
+        std::string rendered = chat.prompt;
         auto tokens = tokenize(rendered, unbounded);
         float temperature = sampling.value("temperature", 0.7f);
         float top_p = sampling.value("top_p", 0.95f);
@@ -439,7 +520,10 @@ class Engine {
         if (tokens.size() >= capacity) compact(0);
         emit(active_id, "rendered", {{"rendered", rendered}, {"token_ids", tokens},
              {"template", command.value("raw", false) ? "" : common_chat_templates_source(templates.get())},
-             {"settings", settings(command)}, {"tools_enabled", tools}, {"unbounded", unbounded}, {"runtime", runtime()}});
+             {"settings", settings(command)}, {"tools_enabled", tools},
+             {"tool_format", native ? "llama-chat-v1" : "steering-v1"},
+             {"chat_format", common_chat_format_name(chat.format)},
+             {"unbounded", unbounded}, {"runtime", runtime()}});
         auto prefill = [&](size_t first_token) {
             for (size_t i = 0; i < tokens.size() && !cancelled;) {
                 boundary(first_token, true);
@@ -477,34 +561,90 @@ class Engine {
             llama_sampler_chain_add(sampler.get(), llama_sampler_init_temp(temperature));
             llama_sampler_chain_add(sampler.get(), llama_sampler_init_dist(seed));
         }
-        std::string output, pending, assistant_segment;
+        std::string output, pending, assistant_segment, segment_visible;
+        common_chat_msg native_message;
         json reply_messages = json::array();
         json tool_history = command;
         pending_utf8.clear();
         size_t produced = 0, tool_count = 0;
         bool in_tool = false;
-        const std::string open = "<torment_tool>", close = "</torment_tool>";
+        // Accept historical envelopes when continuing old chats, but advertise
+        // only the neutral steering protocol to new turns.
+        const std::pair<std::string, std::string> envelopes[] = {
+            {"<steering_tool>", "</steering_tool>"},
+            {"<torment_tool>", "</torment_tool>"},
+        };
+        std::string open, close;
         const auto * vocab = llama_model_get_vocab(model);
         for (; produced < maximum && !cancelled; ++produced) {
             // Logits already exist. Updates here first affect the next distribution.
             llama_token token = llama_sampler_sample(sampler.get(), context, -1);
-            if (llama_vocab_is_eog(vocab, token)) break;
-            std::string piece = common_token_to_piece(vocab, token, false);
-            assistant_segment += piece;
+            bool end_turn = llama_vocab_is_eog(vocab, token);
+            if (end_turn && !native) break;
+            std::string stop = end_turn ? common_token_to_piece(vocab, token, true) : "";
+            std::string piece = end_turn ? "" : common_token_to_piece(vocab, token, native);
             std::string visible = complete_utf8(piece);
+            assistant_segment += native ? visible : piece;
             std::optional<std::string> call;
-            if (tools) {
+            if (native) {
+                require(assistant_segment.size() <= 8 * 1024 * 1024, "native assistant segment exceeds 8 MiB");
+                visible.clear();
+                try {
+                    native_message = common_chat_parse(assistant_segment, !end_turn, parser);
+                    const auto content = native_message.render_content();
+                    require(content.compare(0, segment_visible.size(), segment_visible) == 0,
+                            "native parser rewrote already-streamed content");
+                    visible = content.substr(segment_visible.size());
+                    segment_visible = content;
+                } catch (const std::exception &) {
+                    // An unfinished native header is not prose or an executable
+                    // call. At a real turn boundary, a parse error is terminal.
+                    if (end_turn) throw;
+                }
+                if (end_turn && !native_message.tool_calls.empty()) {
+                    // The common parser is lenient for streaming. Require a
+                    // complete grammar match before executing anything.
+                    common_peg_parse_context check(parser.generation_prompt + assistant_segment);
+                    const auto parsed = parser.parser.parse(check);
+                    require(parsed.success() && check.input.find_first_not_of(" \t\r\n", parsed.end) == std::string::npos,
+                            "incomplete or trailing native tool call data; nothing executed");
+                    require(native_message.tool_calls.size() == 1, "only one native tool call at a time is supported");
+                    auto & tool = native_message.tool_calls.front();
+                    require(tool.arguments.size() <= 1024 * 1024, "tool call exceeds 1 MiB");
+                    auto arguments = json::parse(tool.arguments);
+                    require(arguments.is_object(), "native tool arguments must be an object");
+                    if (tool.id.empty()) tool.id = "call_" + active_id + "_" + std::to_string(tool_count + 1);
+                    call = json({{"name", tool.name}, {"arguments", arguments}}).dump();
+                }
+                output += visible;
+                if (end_turn && !call) {
+                    if (!visible.empty()) emit(active_id, "token", {{"text", visible}, {"index", produced}, {"token", token}, {"revision", revision}});
+                    break;
+                }
+            } else if (tools) {
                 pending += visible;
                 visible.clear();
                 if (!in_tool) {
-                    const size_t at = pending.find(open);
+                    size_t at = std::string::npos;
+                    for (const auto & envelope : envelopes) {
+                        const size_t candidate = pending.find(envelope.first);
+                        if (candidate < at) {
+                            at = candidate;
+                            open = envelope.first;
+                            close = envelope.second;
+                        }
+                    }
                     if (at != std::string::npos) {
                         visible = pending.substr(0, at);
                         pending.erase(0, at + open.size());
                         in_tool = true;
                     } else {
-                        size_t keep = std::min(pending.size(), open.size() - 1);
-                        while (keep && pending.compare(pending.size() - keep, keep, open, 0, keep) != 0) --keep;
+                        size_t keep = 0;
+                        for (const auto & envelope : envelopes) {
+                            size_t suffix = std::min(pending.size(), envelope.first.size() - 1);
+                            while (suffix && pending.compare(pending.size() - suffix, suffix, envelope.first, 0, suffix) != 0) --suffix;
+                            keep = std::max(keep, suffix);
+                        }
                         visible = pending.substr(0, pending.size() - keep);
                         pending.erase(0, pending.size() - keep);
                     }
@@ -538,10 +678,39 @@ class Engine {
                 if (cancelled) { ++produced; break; }
             }
             const bool can_continue = unbounded || produced + 1 < maximum;
-            if (can_continue) append({token}, produced + 1);
+            if (can_continue && !end_turn) append({token}, produced + 1);
             if (call && !cancelled) {
-                std::string feedback = "Torment Nexus tool result:\n<torment_result>" + tool_reply.dump() +
-                    "</torment_result>\nContinue your response using this result; you may call another tool if needed.";
+                if (native) {
+                    json assistant = json::parse(native_message.to_json_oaicompat().dump());
+                    assistant["content"] = native_message.render_content();
+                    assistant["native_text"] = assistant_segment;
+                    const auto & tool = native_message.tool_calls.front();
+                    // Prefix makes this unambiguously a string even for older
+                    // Gemma templates which auto-convert JSON result contents.
+                    const json result_message = {{"role", "tool"}, {"name", tool.name}, {"tool_call_id", tool.id},
+                        {"content", "Tool result:\n" + tool_reply.dump()}};
+                    if (can_continue) {
+                        const auto framed = native_continuation(tool_history, assistant, result_message, stop);
+                        append(common_tokenize(vocab, framed.before, false, true), produced + 1);
+                        append(common_tokenize(vocab, framed.body, false, false), produced + 1);
+                        append(common_tokenize(vocab, framed.after, false, true), produced + 1);
+                        emit(active_id, "tool_continuation", {{"tool_id", std::to_string(tool_count)},
+                            {"first_token_index", produced + 1}, {"before_result", framed.before}, {"after_result", framed.after},
+                            {"tool_format", "llama-chat-v1"}});
+                        chat = framed.chat;
+                        update_parser();
+                    }
+                    reply_messages.push_back(assistant);
+                    reply_messages.push_back(result_message);
+                    tool_history["messages"].push_back(assistant);
+                    tool_history["messages"].push_back(result_message);
+                    assistant_segment.clear();
+                    segment_visible.clear();
+                    native_message = {};
+                    continue;
+                }
+                std::string feedback = "Activation steering tool result:\n<steering_result>" + tool_reply.dump() +
+                    "</steering_result>\nUse this result to finish the requested action or continue your reply to the user.";
                 if (can_continue) {
                     const auto framed = tool_boundaries(tool_history, tool_count);
                     append(common_tokenize(vocab, framed.first, false, true), produced + 1);
@@ -560,8 +729,11 @@ class Engine {
             }
         }
         // Incomplete markup is retained as text, never executed.
-        if (tools) output += (in_tool ? open : "") + pending;
-        reply_messages.push_back({{"role", "assistant"}, {"content", assistant_segment}});
+        if (tools && !native) output += (in_tool ? open : "") + pending;
+        if (native) {
+            reply_messages.push_back({{"role", "assistant"}, {"content", segment_visible},
+                {"reasoning_content", native_message.reasoning_content}, {"native_text", assistant_segment}});
+        } else reply_messages.push_back({{"role", "assistant"}, {"content", assistant_segment}});
         emit(active_id, "done", {{"output", output}, {"cancelled", cancelled},
                                  {"tokens", produced}, {"revision", revision}, {"runtime", runtime()},
                                  {"reply_messages", reply_messages}});
@@ -610,7 +782,8 @@ class Engine {
             emit(active_id, "result", {{"path", model_path}, {"n_layer", layers}, {"n_embd", width},
                  {"context", llama_n_ctx(context)}, {"batch", batch_size}, {"microbatch", microbatch},
                  {"supported_layers", supported}, {"chat_template", source ? source : ""},
-                 {"self_tools", true}, {"unbounded_output", true},
+                 {"self_tools", true}, {"tool_format", "steering-v1"}, {"unbounded_output", true},
+                 {"native_tools", native_tools_supported()}, {"native_tool_format", "llama-chat-v1"},
                  {"model_bytes", llama_model_size(model)}, {"runtime", runtime()}});
         } catch (...) { unload(); throw; }
     }
@@ -628,7 +801,7 @@ public:
                 auto op = command.at("op").get<std::string>();
                 if (op == "capabilities") emit(active_id, "result", {{"runtime", runtime()},
                     {"capture", "exact l_out-{graph_layer}, contiguous F32, final token only"},
-                    {"steering_layers", "1..n_layer-1"}, {"live_controls", true}, {"self_tools", true}, {"unbounded_output", true}, {"cache", "F16"}});
+                    {"steering_layers", "1..n_layer-1"}, {"live_controls", true}, {"self_tools", true}, {"tool_format", "steering-v1"}, {"unbounded_output", true}, {"cache", "F16"}});
                 else if (op == "load") load(command);
                 else if (op == "unload") { unload(); emit(active_id, "result"); }
                 else if (op == "extract") extract(command, false);

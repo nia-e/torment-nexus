@@ -294,6 +294,11 @@ test("each concept exposes independent layer sliders in saved and live mixes", a
 test("desktop layout fits the viewport with the jobs drawer open or closed", async ({
   page,
 }) => {
+  await expect(page.locator("footer")).toHaveCount(0);
+  await expect(page.getByText(/Chat stays on this machine/)).toHaveCount(0);
+  await expect(page.locator(".model-footprint")).not.toContainText(
+    "last sample",
+  );
   for (const [width, height] of [
     [1440, 980],
     [1280, 720],
@@ -323,6 +328,51 @@ test("desktop layout fits the viewport with the jobs drawer open or closed", asy
   }
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.screenshot({ path: "../work/viewport-fit.png", fullPage: true });
+});
+
+test("old failures stay visible until dismissed instead of haunting the attention count", async ({
+  page,
+}) => {
+  let dismissed = false;
+  await page.route("**/api/state", async (route) => {
+    const response = await route.fetch();
+    const state = await response.json();
+    state.jobs = [
+      {
+        id: "old-failure",
+        kind: "generate",
+        status: "interrupted",
+        created_at: 1,
+        error: "Old interrupted response",
+        attention_dismissed: dismissed,
+      },
+      ...Array.from({ length: 45 }, (_, i) => ({
+        id: `recent-${i}`,
+        kind: "generate",
+        status: "completed",
+        created_at: i + 2,
+      })),
+    ];
+    await route.fulfill({ json: state });
+  });
+  await page.route("**/api/action", async (route) => {
+    const body = route.request().postDataJSON();
+    if (body.action !== "dismiss_job_attention") return route.continue();
+    expect(body.job_id).toBe("old-failure");
+    dismissed = true;
+    await route.fulfill({ json: { ok: true } });
+  });
+  await page.reload();
+  const toggle = page.getByRole("button", { name: /Jobs & provenance/ });
+  await expect(toggle).toContainText("1 needs attention");
+  await toggle.click();
+  await expect(
+    page.getByText("Old interrupted response", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(toggle).not.toContainText("needs attention");
+  await page.reload();
+  await expect(toggle).not.toContainText("needs attention");
 });
 
 test("chat gets most of the viewport and focus mode preserves the mixer", async ({
@@ -572,6 +622,7 @@ test("legacy sign-policy metadata never locks coefficients or claims enforcement
       coefficient_policy: "non_positive",
       preview_mode: "none",
       extraction: { method: "paper", readout_suffix: "I feel:" },
+      warnings: ["Fixture diagnostic remains available on demand."],
     });
     await route.fulfill({ response, json: state });
   });
@@ -614,6 +665,13 @@ test("legacy sign-policy metadata never locks coefficients or claims enforcement
     page.getByText(/The selection score is not an independent test/),
   ).toBeVisible();
   await expect(page.getByText(/enforced by the server/)).toHaveCount(0);
+  const diagnostic = page.getByText(
+    "Fixture diagnostic remains available on demand.",
+    { exact: true },
+  );
+  await expect(diagnostic).toBeHidden();
+  await page.getByText("Diagnostics (1)", { exact: true }).click();
+  await expect(diagnostic).toBeVisible();
   await page.getByRole("button", { name: "Previews", exact: true }).click();
   await expect(
     page.getByText(/Automatic previews were disabled/),
@@ -621,26 +679,50 @@ test("legacy sign-policy metadata never locks coefficients or claims enforcement
   await expect(page.getByText("No completed previews yet")).toHaveCount(0);
 });
 
-test("historical recipe extraction stays unchanged unless a new method is explicitly selected", async ({
+test("shared recipes extract and edit for the selected model while preserving their method", async ({
   page,
 }) => {
   const requests: Record<string, unknown>[] = [];
+  await page.route("**/api/state", async (route) => {
+    const response = await route.fetch();
+    const state = await response.json();
+    state.models.push({
+      ...state.models[0],
+      id: "second-model",
+      name: "Second model",
+      fingerprint: "second-fingerprint",
+    });
+    await route.fulfill({ json: state });
+  });
   await page.route("**/api/action", async (route) => {
     const body = route.request().postDataJSON();
-    if (body.action !== "extract_recipe") return route.continue();
+    if (!["extract_recipe", "edit_recipe"].includes(body.action))
+      return route.continue();
     requests.push(body);
-    return route.fulfill({ json: { job_id: "explicit-extraction" } });
+    return route.fulfill({
+      json: { id: "recipe-fixture", job_id: "explicit-extraction" },
+    });
   });
+  await page.reload();
+  await page.locator(".model-selector").click();
+  await page.getByRole("button", { name: "Select model", exact: true }).click();
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
   await page.getByRole("button", { name: /^Recipes/ }).click();
+  await expect(
+    page.getByText("Shared across all models.", { exact: true }),
+  ).toBeVisible();
   await page.getByRole("button", { name: /Dry wit v1/ }).click();
+  await expect(
+    page.getByRole("dialog").getByText("Second model", { exact: true }),
+  ).toBeVisible();
   await page
-    .getByRole("button", { name: "Extract this version", exact: true })
+    .getByRole("button", { name: "Extract for selected model", exact: true })
     .click();
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0]).toEqual({
     action: "extract_recipe",
     recipe_id: "recipe-fixture",
-    model_id: "model-fixture",
+    model_id: "second-model",
   });
   await page
     .getByText("Re-extract with different settings", { exact: true })
@@ -658,8 +740,32 @@ test("historical recipe extraction stays unchanged unless a new method is explic
     .click();
   await expect.poll(() => requests.length).toBe(2);
   expect(requests[1]).toMatchObject({
+    model_id: "second-model",
+    recipe_id: "recipe-fixture",
     extraction: { method: "paper", readout_suffix: "This seems:" },
   });
+  await page.getByRole("button", { name: "Edit stages", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "dataset JSON editor" });
+  const dataset = JSON.parse(await editor.inputValue());
+  dataset.pairs[0].positive = "A quieter kind of wit.";
+  await editor.fill(JSON.stringify(dataset));
+  await page
+    .getByRole("button", { name: "Save new version", exact: true })
+    .click();
+  await expect.poll(() => requests.length).toBe(3);
+  expect(requests[2]).toMatchObject({
+    action: "edit_recipe",
+    model_id: "second-model",
+    recipe_id: "recipe-fixture",
+  });
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await page.reload();
+  await page.getByRole("button", { name: /^Recipes/ }).click();
+  await expect(page.getByRole("button", { name: /Dry wit v1/ })).toBeVisible();
+  await page.locator(".model-selector").click();
+  await page.getByRole("button", { name: "Select model", exact: true }).click();
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await expect(page.getByRole("button", { name: /Dry wit v1/ })).toBeVisible();
 });
 
 test("token is scrubbed; factory roles, create, immutable dataset editing and reload", async ({

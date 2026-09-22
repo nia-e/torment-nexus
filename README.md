@@ -82,6 +82,8 @@ controls. Delete removes entries from the UI, not their stored provenance; it is
 not a disk wipe. **Archive** hides vectors; use **Show archived** to restore them.
 
 Dataset and recipe edits create new versions and rerun only affected stages.
+Recipes are shared across models; extraction reuses their examples to create
+vectors for the selected model.
 Interrupted jobs retain completed work; retry is explicit, never silently repeated
 on startup. Interrupted responses are saved but cannot be resumed exactly.
 

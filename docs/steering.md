@@ -121,21 +121,29 @@ connection** section of the mixer shows its URL and a separate launch-scoped bea
 token; that token cannot access the browser API or chat transcripts. No client is
 configured automatically, and dataset-generation agents remain tool-isolated.
 
-The local model uses a small text-envelope tool bridge, not model-specific native
-function-call templates. A complete `<torment_tool>{"name":...,"arguments":...}</torment_tool>`
-in generated output is a call while this feature is enabled. The worker pauses at
-a decode boundary, Rust validates and executes the request, and a JSON tool result
-is framed as a separate host-result message using the model's chat template,
-followed by a fresh assistant-generation prefix. Result data is tokenized without
-special-token parsing; only template-derived role boundaries parse special tokens.
-This appends to the existing state rather than replaying it under new coefficients.
-Calls are shown separately from prose and saved with the run. The actual assistant /
-result / assistant exchanges are retained for subsequent chat turns, including
-when the visible prose only announces a call. Some models may fail to follow this protocol; that is not a
-successful adjustment. Incomplete or malformed calls never bypass validation.
+The worker uses llama.cpp's native tool templates and parsers when the model's
+GGUF template supports them (tested with Gemma 4 and Bonsai). Tools are supplied
+as function schemas; calls and results use the model's own syntax. No adapter
+selection is needed. Template-free or unsupported models retain the
+`<steering_tool>{"name":...,"arguments":...}</steering_tool>` text bridge and
+`<steering_result>` replies; historical envelopes remain accepted there.
+
+Native calls execute only at a completed model turn, never from partial streamed
+arguments. Rust validates each request using the same permissions and revision
+checks as MCP. The worker appends the template-framed result to its existing
+state, without replaying earlier tokens under new coefficients. Result data is
+tokenized as plain text; only template boundaries parse special tokens. If a
+native template cannot safely append its result, generation fails visibly rather
+than silently resetting state. Calls are separate from prose and saved as
+structured assistant/tool messages for subsequent turns and forks. Malformed
+or incomplete calls never bypass validation. A model may still choose not to
+call a tool; that is not a successful adjustment.
 
 `get_mix` returns the active run ID, current control revision, slider IDs/layers,
-names, percentages, and the last applied revision. `set_mix` takes `run_id`,
+names, percentages, and the last applied revision. These tools target the local
+model generating the reply, not the human or an external MCP client. Percentages
+are absolute coefficients: zero disables a contribution and negative values
+reverse its direction. Changing a whole concept requires listing each layer. `set_mix` takes `run_id`,
 `expected_revision`, and a partial `changes` array of `{vector_id,layer,percent}`;
 optional `reason` is recorded. Unmentioned axes remain unchanged. It cannot add
 vectors/layers, modify recipes, read chat, start inference, or grant itself access.

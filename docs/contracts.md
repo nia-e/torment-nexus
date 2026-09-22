@@ -32,14 +32,19 @@ contain full records (large activation tensors and raw agent output remain artif
   Optional `preview_mode:"standard"|"negative_only"|"none"` (default `none` for new requests).
   Historical `coefficient_policy` metadata does not restrict coefficient signs.
   Agent content alone leaves the machine, not local chat.
-- `edit_recipe`: `recipe_id`, `stage` (design/writer_1/writer_2/writer_3/review/repair/dataset), `value` (JSON).
+- `edit_recipe`: `recipe_id`, `model_id` (downstream extraction target), `stage` (design/writer_1/writer_2/writer_3/review/repair/dataset), `value` (JSON).
   Creates a new immutable recipe version; descendants are not reused incorrectly.
-- `edit_job_stage`: `job_id`, `stage`, `value`; fork any completed factory checkpoint
+- `edit_job_stage`: `job_id`, `model_id`, `stage`, `value`; fork any completed factory checkpoint
   into a new draft recipe and job, without altering the running original.
+  Both edit actions accept omitted `model_id` only when a legacy recipe or source
+  job supplies a default; the UI always sends the selected model.
 - `retry_job`: `job_id`; resumes only incomplete stages; no silent automatic retry on launch.
+- `dismiss_job_attention`: `job_id`; clears a failed/interrupted job's attention
+  badge without deleting its history or outputs. Retrying resets dismissal.
 - `extract_recipe`: `recipe_id`, `model_id`, optional `raw` and `extraction` overrides.
   Omitted settings preserve the recipe, including historical completion extraction.
-  Changed settings/model create an immutable recipe version; retry reuses that version.
+  Recipes are shared: a different target model reuses the same recipe and examples.
+  Changed settings create an immutable recipe version; retry reuses that version.
   Preview settings and historical metadata are inherited by this action.
 - `cancel_job`: `job_id`.
 - `generate`: `model_id`, `messages:[{role,content}]`, `axes:[{vector_id,layer,percent}]`,
@@ -70,7 +75,8 @@ layers:[{layer,auc,residual_norm,direction_hash,unit_hash,width}],warnings,manif
 New vectors also carry `extraction` and `preview_mode` bound to the immutable
 recipe. Historical `coefficient_policy` fields are provenance only, not an active
 control constraint. Layers fitted with the adapted method retain `fold_aucs` and `removed_control_pcs`.
-Recipe fields: id,concept,model_id,parent_id,version,design,dataset,review,stages,roles,warnings.
+Recipe fields: id,concept,parent_id,version,design,dataset,review,stages,roles,warnings.
+Legacy recipes may retain `model_id` as creation metadata, not a compatibility constraint.
 Dataset pair fields: id,family,messages:[{role,content}],positive,negative,split (train/diagnostic).
 That pair-level split is a legacy diagnostic annotation, not the fit mask for the
 [Tagliabue et al. adaptation](paper-extraction.md). This method stores its family-fold
@@ -131,11 +137,24 @@ Run provenance includes `self_tools_available`, current `self_modification`,
 The original user messages are kept separate from the rendered tool instructions;
 the rendered prompt artifact contains exactly what the worker received.
 
-The engine advertises `self_tools` and `unbounded_output`. Opt-in `generate` accepts
-`tools_enabled`; a generated `torment_tool` envelope produces `tool_call` and pauses.
-The host sends `tool_result {target,tool_id,result}`; only the matching active call
-can be answered. Cancellation and complete control updates remain available while
-paused. Tool feedback is decoded as plain text, without special-token parsing.
+The engine advertises `self_tools` and `unbounded_output`. Model load also reports
+`native_tools` from llama.cpp's template capabilities. Opt-in `generate` accepts
+`tools_enabled`, `tool_format:"llama-chat-v1"` and OpenAI-shaped function `tools`.
+The worker uses llama.cpp's template and output parser, executes complete calls
+at end-of-turn, and emits the same `tool_call` events as the fallback bridge.
+Rendered provenance records `tool_format` and `chat_format`. Native reply history
+uses assistant `tool_calls` and role `tool` messages with `tool_call_id` and `name`;
+all messages keep string `content`. Assistant `native_text` preserves raw syntax.
+These structured messages may also be replayed with self-adjustment disabled.
+
+The default `tool_format:"steering-v1"` remains for raw/unsupported templates and
+older private-pipe clients. A complete `steering_tool` envelope produces a
+`tool_call` and pauses; historical envelopes remain accepted, and results use
+`steering_result`. Both transports accept the same host response:
+`tool_result {target,tool_id,result}`. Only the matching active call can be answered.
+Cancellation and full control updates remain available while paused. Template
+boundaries are appended, not re-prefilled; result data is tokenized without
+special-token parsing. Unsupported continuation boundaries fail explicitly.
 `context_rollover` events disclose full memory resets followed by prefix/tail replay.
 Sampling has no output-token cap when unbounded, but EOS and cancellation still end it.
 

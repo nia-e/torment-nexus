@@ -49,6 +49,33 @@ describe("durable chat ordering", () => {
     expect(conversationHistory(run("old"), "Old reply")).toEqual([
       { role: "assistant", content: "Old reply" },
     ]);
+    const native = run("native", {
+      messages: previous.messages,
+      reply_messages: [
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call-1",
+              type: "function",
+              function: { name: "get_mix", arguments: "{}" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          name: "get_mix",
+          tool_call_id: "call-1",
+          content: "Tool result: zero.",
+        },
+        { role: "assistant", content: "The mix is zero." },
+      ],
+    });
+    expect(conversationHistory(native, native.output)).toEqual([
+      ...native.messages,
+      ...native.reply_messages!,
+    ]);
   });
   it("preserves exact turn ordering when timestamps tie", () => {
     expect(

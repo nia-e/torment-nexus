@@ -36,7 +36,7 @@ pub async fn handle(
     }
     let result = match request["method"].as_str().unwrap() {
         "initialize" => {
-            json!({"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"torment-nexus","version":env!("CARGO_PKG_VERSION")},"instructions":"Controls only the currently generating response when the user enables self-adjustment. No access to chat transcripts. Call get_mix before set_mix. User changes may invalidate a revision; read again rather than overwriting."})
+            json!({"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"torment-nexus","version":env!("CARGO_PKG_VERSION")},"instructions":format!("{} Access requires the user to enable self-adjustment. No chat transcripts are exposed. Call get_mix before set_mix and copy its run_id and revision. User changes may invalidate a revision; read again rather than overwriting.",self_tools::PURPOSE)})
         }
         "ping" => json!({}),
         "tools/list" => json!({"tools":self_tools::definitions()}),

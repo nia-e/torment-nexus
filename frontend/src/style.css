@@ -499,6 +499,7 @@ progress::-moz-progress-bar {
   align-items: center;
   gap: 9px;
   margin-top: 28px;
+  margin-bottom: 12px;
 }
 .library-heading h2,
 .mixer-title h2 {
@@ -665,11 +666,6 @@ progress::-moz-progress-bar {
   display: flex;
   padding: 0;
   color: var(--muted);
-}
-.inline-warning {
-  font-size: 9px;
-  color: var(--accent);
-  margin-top: 9px;
 }
 .recipe-card {
   display: block;
@@ -987,9 +983,6 @@ progress::-moz-progress-bar {
   font-size: 8px;
   color: var(--dim);
 }
-.lock-icon {
-  font-size: 12px;
-}
 .sampling-panel {
   background: #11191f;
   padding: 16px 25px;
@@ -1186,6 +1179,7 @@ progress::-moz-progress-bar {
   gap: 10px;
   align-items: center;
   margin-top: 5px;
+  margin-bottom: 12px;
 }
 .mixer-panel .panel-intro {
   margin-bottom: 18px;
@@ -1464,14 +1458,11 @@ progress::-moz-progress-bar {
   font-weight: 400;
   color: var(--muted);
 }
-.model-footprint > span:last-child {
-  font-size: 8px;
-  color: var(--dim);
-}
 .jobs-drawer {
   border: 1px solid var(--edge);
   border-radius: 8px;
   margin-top: 12px;
+  margin-bottom: 8px;
   background: #151d23;
   overflow: hidden;
 }
@@ -1581,21 +1572,6 @@ progress::-moz-progress-bar {
 }
 .job-actions details pre {
   margin-top: 10px;
-}
-.app-footer {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 15px 1px 18px;
-  font-family: var(--mono);
-  font-size: 7px;
-  letter-spacing: 1.1px;
-  color: #526671;
-}
-.app-footer > span:last-child {
-  font-family: inherit;
-  letter-spacing: 0;
-  color: #647681;
 }
 .notices {
   position: fixed;
@@ -1736,16 +1712,6 @@ progress::-moz-progress-bar {
   line-height: 1.9;
   color: #93a6b2;
   margin-bottom: 21px;
-}
-.note {
-  background: #e9ba8608;
-  border: 1px solid #e9ba8626;
-  border-radius: 6px;
-  padding: 12px 13px;
-  font-size: 11px;
-  color: #bbaa94;
-  line-height: 1.8;
-  margin: 15px 0;
 }
 .error-box {
   font-size: 11px;
@@ -2036,24 +2002,6 @@ progress::-moz-progress-bar {
 .role-grid select {
   font-size: 11px;
 }
-.privacy-note {
-  display: flex;
-  gap: 10px;
-  align-items: start;
-  padding: 15px 13px;
-  background: #94cdb906;
-  border: 1px solid #94cdb922;
-  border-radius: 6px;
-  font-size: 10px;
-  color: #8aa599;
-  line-height: 1.9;
-  margin-top: 22px;
-}
-.privacy-note svg {
-  flex-shrink: 0;
-  color: #779489;
-  margin-top: 2px;
-}
 .check-label {
   display: flex;
   align-items: center;
@@ -2224,20 +2172,17 @@ progress::-moz-progress-bar {
   color: var(--mint);
 }
 .warnings {
-  border: 1px solid #e9ba8629;
-  border-radius: 6px;
-  padding: 14px;
-  background: #e9ba8606;
-  margin: 20px 0;
+  color: var(--muted);
+  font-size: 11px;
+  margin: 12px 0;
 }
-.warnings .eyebrow {
-  color: #bda27d;
+.warnings summary {
+  cursor: pointer;
 }
 .warnings ul {
   margin: 10px 0 0;
   padding-left: 15px;
   font-size: 11px;
-  color: #b7a997;
   line-height: 1.8;
 }
 .section-title {
@@ -2443,9 +2388,6 @@ progress::-moz-progress-bar {
   .job-main time {
     display: none;
   }
-  .app-footer {
-    font-size: 6px;
-  }
   .drawer-hint {
     font-size: 8px;
   }
@@ -2547,9 +2489,6 @@ progress::-moz-progress-bar {
   }
   .jobs-content {
     grid-template-columns: 1fr;
-  }
-  .app-footer > span:nth-child(2) {
-    display: none;
   }
   .transcript {
     min-height: 260px;
@@ -2825,14 +2764,6 @@ progress::-moz-progress-bar {
     flex-direction: column;
     gap: 2px;
   }
-  .app-footer {
-    font-size: 5px;
-    letter-spacing: 0.7px;
-  }
-  .app-footer > span:last-child {
-    font-size: 6px;
-    text-align: right;
-  }
   .modal {
     max-height: calc(100dvh - 24px);
     width: calc(100vw - 20px);
@@ -3091,7 +3022,6 @@ progress::-moz-progress-bar {
   margin: 8px 0 10px;
 }
 .mixture-diagnostics .warnings {
-  padding: 10px;
   margin: 12px 0;
 }
 .mixture-diagnostics .warnings li {
@@ -3562,7 +3492,6 @@ progress::-moz-progress-bar {
     overflow: hidden;
   }
   .topbar,
-  .app-footer,
   .connection-banner {
     flex-shrink: 0;
   }

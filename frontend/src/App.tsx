@@ -41,6 +41,7 @@ import {
   type Job,
   type Json,
   type Message,
+  type Model,
   type Recipe,
   type Roles,
   type Run,
@@ -652,9 +653,21 @@ export default function App() {
     state.engine.model_id === currentModelId &&
     !["unloaded", "loading", "error", "failed"].includes(state.engine.status);
   const activeJobs = state.jobs.filter((job) => activeStatuses.has(job.status));
-  const problemJobs = state.jobs.filter((job) =>
-    ["failed", "interrupted"].includes(job.status),
+  const problemJobs = state.jobs.filter(
+    (job) =>
+      !job.attention_dismissed &&
+      ["failed", "interrupted"].includes(job.status),
   );
+  // The badge and drawer must agree, even when a failure predates recent history.
+  const pinnedJobs = [...activeJobs, ...problemJobs].sort(recordTime);
+  const pinnedIds = new Set(pinnedJobs.map((job) => job.id));
+  const visibleJobs = [
+    ...pinnedJobs,
+    ...[...state.jobs]
+      .sort(recordTime)
+      .filter((job) => !pinnedIds.has(job.id))
+      .slice(0, 40),
+  ];
 
   useEffect(() => {
     if (
@@ -1062,7 +1075,7 @@ export default function App() {
           Open the browser link printed by the Torment Nexus launcher. Its
           launch token stays in this tab, not in your URL or model history.
         </p>
-        <div className="note">
+        <div className="error-box">
           {token
             ? "This session token was rejected. Restarting the app creates a new launch link."
             : "No launch token found. Use the full launch URL, including its #token fragment."}
@@ -1174,7 +1187,6 @@ export default function App() {
             <h2>Your directions</h2>
             <Badge>{visibleVectors.length}</Badge>
           </div>
-          <p className="panel-intro">Give a model somewhere strange to go.</p>
           <button
             className="button primary full"
             onClick={() => setDialog("concept")}
@@ -1195,13 +1207,7 @@ export default function App() {
               onClick={() => setLibraryTab("recipes")}
             >
               Recipes{" "}
-              <span>
-                {
-                  state.recipes.filter(
-                    (r) => !r.deleted && r.model_id === currentModelId,
-                  ).length
-                }
-              </span>
+              <span>{state.recipes.filter((r) => !r.deleted).length}</span>
             </button>
           </div>
           <label className="search-field">
@@ -1268,12 +1274,6 @@ export default function App() {
                           <Icon name="chevron" size={14} />
                         </button>
                       </div>
-                      {!!vector.warnings?.length && (
-                        <div className="inline-warning">
-                          {vector.warnings.length} advisory note
-                          {vector.warnings.length > 1 ? "s" : ""}
-                        </div>
-                      )}
                       <div className="vector-library-actions">
                         {recordActions("vectors", vector.id, vector.name)}
                         {archived && <span>Archived</span>}
@@ -1332,11 +1332,11 @@ export default function App() {
               </>
             ) : (
               <>
+                <p className="panel-intro">Shared across all models.</p>
                 {state.recipes
                   .filter(
                     (recipe) =>
                       !recipe.deleted &&
-                      recipe.model_id === currentModelId &&
                       (recipe.display_name ?? recipe.concept)
                         .toLowerCase()
                         .includes(filter.toLowerCase()),
@@ -1368,10 +1368,7 @@ export default function App() {
                       )}
                     </div>
                   ))}
-                {!state.recipes.some(
-                  (recipe) =>
-                    !recipe.deleted && recipe.model_id === currentModelId,
-                ) && (
+                {!state.recipes.some((recipe) => !recipe.deleted) && (
                   <Empty title="The paper trail starts here">
                     Every design, dataset, and revision stays inspectable. Edits
                     make a new version.
@@ -1381,8 +1378,6 @@ export default function App() {
             )}
           </div>
           <div className="library-footer">
-            <span className="status-dot green" />
-            Local files. Local inference.
             <button onClick={() => setDialog("models")}>
               Manage models <Icon name="arrow" size={13} />
             </button>
@@ -1740,20 +1735,18 @@ export default function App() {
                 )}
               </div>
             </div>
-            <div className="composer-note">
-              {workspace.mode === "scratchpad" &&
-                workspace.prefixMessages.length > 0 && (
+            {workspace.mode === "scratchpad" &&
+              workspace.prefixMessages.length > 0 && (
+                <div className="composer-note">
                   <button
                     type="button"
                     className="quiet-button"
                     onClick={() => updateWorkspace({ prefixMessages: [] })}
                   >
-                    Clear duplicated context ·{" "}
+                    Clear duplicated context
                   </button>
-                )}
-              <span className="lock-icon">◇</span>Chat stays on this machine.
-              Only concept inputs go to Codex.
-            </div>
+                </div>
+              )}
           </form>
         </section>
 
@@ -1769,9 +1762,6 @@ export default function App() {
               {selectedVectors.length === 1 ? "concept" : "concepts"}
             </Badge>
           </div>
-          <p className="panel-intro">
-            Residual perturbation, not emotional intensity.
-          </p>
           <div
             className={`control-status ${pendingRevision !== null ? "pending" : activeRun ? "live" : ""}`}
           >
@@ -1909,7 +1899,16 @@ export default function App() {
               />
             </details>
           )}
-          <div className="model-footprint">
+          <div
+            className="model-footprint"
+            title={
+              state.engine.memory_bytes != null
+                ? "Peak worker RSS · last sample"
+                : engineReady
+                  ? "Model file size · not live RAM"
+                  : "No model loaded"
+            }
+          >
             <span>
               {state.engine.memory_bytes != null
                 ? "WORKER MEMORY"
@@ -1921,13 +1920,6 @@ export default function App() {
                   (engineReady ? model?.size_bytes : undefined),
               )}
             </strong>
-            <span>
-              {state.engine.memory_bytes != null
-                ? "Peak worker RSS · last sample"
-                : engineReady
-                  ? "Model file size · not live RAM"
-                  : "No model loaded"}
-            </span>
           </div>
         </aside>
       </main>
@@ -1947,7 +1939,10 @@ export default function App() {
               <span className="dim">Nothing running in the background</span>
             )}
             {problemJobs.length > 0 && (
-              <Badge tone="amber">{problemJobs.length} need attention</Badge>
+              <Badge tone="amber">
+                {problemJobs.length}{" "}
+                {problemJobs.length === 1 ? "needs" : "need"} attention
+              </Badge>
             )}
           </span>
           <span className="drawer-hint">
@@ -1957,39 +1952,36 @@ export default function App() {
         </button>
         {showJobs && (
           <div className="jobs-content">
-            {[...state.jobs]
-              .sort(recordTime)
-              .slice(0, 40)
-              .map((job) => (
-                <JobCard
-                  key={job.id}
-                  job={job}
-                  act={act}
-                  fork={
-                    job.kind === "factory" &&
-                    Object.keys(checkpointRefs(jobCheckpoints(job))).length
-                      ? () => setForkJobId(job.id)
+            {visibleJobs.map((job) => (
+              <JobCard
+                key={job.id}
+                job={job}
+                act={act}
+                fork={
+                  job.kind === "factory" &&
+                  Object.keys(checkpointRefs(jobCheckpoints(job))).length
+                    ? () => setForkJobId(job.id)
+                    : undefined
+                }
+                inspect={
+                  job.recipe_id
+                    ? () => setInspect({ kind: "recipe", id: job.recipe_id! })
+                    : job.run_id
+                      ? () => setInspect({ kind: "run", id: job.run_id! })
                       : undefined
-                  }
-                  inspect={
-                    job.recipe_id
-                      ? () => setInspect({ kind: "recipe", id: job.recipe_id! })
-                      : job.run_id
-                        ? () => setInspect({ kind: "run", id: job.run_id! })
-                        : undefined
-                  }
-                  duplicate={
-                    !frozen &&
-                    job.run_id &&
-                    state.runs.some((run) => run.id === job.run_id)
-                      ? () =>
-                          duplicate(
-                            state.runs.find((run) => run.id === job.run_id)!,
-                          )
-                      : undefined
-                  }
-                />
-              ))}
+                }
+                duplicate={
+                  !frozen &&
+                  job.run_id &&
+                  state.runs.some((run) => run.id === job.run_id)
+                    ? () =>
+                        duplicate(
+                          state.runs.find((run) => run.id === job.run_id)!,
+                        )
+                    : undefined
+                }
+              />
+            ))}
             {!state.jobs.length && (
               <p className="muted">
                 Downloads, agents, extraction, and inference will appear here.
@@ -2000,11 +1992,6 @@ export default function App() {
           </div>
         )}
       </section>
-      <footer className="app-footer">
-        <span>TORMENT NEXUS / V0.1</span>
-        <span>GGUF · METAL · LOCAL FIRST</span>
-        <span>Labels are hypotheses. Outputs are observations.</span>
-      </footer>
       <div className="notices" aria-live="polite">
         {notices.map((item) => (
           <div className={`notice ${item.kind}`} key={item.id}>
@@ -2181,6 +2168,7 @@ export default function App() {
           <StageEditor
             key={forkJobId}
             job={state.jobs.find((job) => job.id === forkJobId)}
+            targetModel={model}
             act={act}
             busy={busy}
             onVersion={(id) => {
@@ -2204,6 +2192,7 @@ export default function App() {
           busy={busy}
           exportVector={exportVector}
           raw={workspace.raw}
+          targetModel={model}
           close={() => setInspect(null)}
           onVersion={(id) => setInspect({ kind: "recipe", id })}
         />
@@ -2539,6 +2528,18 @@ function JobCard({
       )}
       {job.error && <p className="error-box">{job.error}</p>}
       <div className="job-actions">
+        {!job.attention_dismissed &&
+          ["failed", "interrupted"].includes(job.status) && (
+            <button
+              className="quiet-button"
+              title="Clear the attention badge; keep the job and its outputs"
+              onClick={() =>
+                void act("dismiss_job_attention", { job_id: job.id })
+              }
+            >
+              Dismiss
+            </button>
+          )}
         {active && (
           <button
             className="quiet-button"
@@ -2783,6 +2784,7 @@ function ModelDialog({
             <input
               autoFocus
               placeholder="/Users/you/Models/model.gguf"
+              title="In Finder, hold Option and choose Copy as Pathname."
               value={path}
               onChange={(e) => setPath(e.target.value)}
               required
@@ -2796,10 +2798,6 @@ function ModelDialog({
               onChange={(e) => setName(e.target.value)}
             />
           </label>
-          <div className="note">
-            Browsers do not reveal a file's full path. In Finder, hold Option
-            and choose “Copy as Pathname”, then paste here.
-          </div>
           <div className="dialog-actions">
             <button
               className="button primary"
@@ -2905,9 +2903,9 @@ function ModelDialog({
                 <Icon name="download" size={15} />
               </button>
               {!listing.files.length && (
-                <div className="note">
+                <p className="muted small">
                   No GGUF files were found in this repository.
-                </div>
+                </p>
               )}
             </div>
           )}
@@ -3129,13 +3127,6 @@ function ConceptDialog({
             {editRoles ? "Hide roles" : "Edit role assignments"}
           </button>
         </div>
-        {new Set(modelList.map((m) => m.id)).size < 3 &&
-          modelList.length > 0 && (
-            <div className="note">
-              Fewer than three distinct models are available. Writers remain
-              independent threads; shared models are recorded in provenance.
-            </div>
-          )}
         {state.codex.error && (
           <div className="error-box">{state.codex.error}</div>
         )}
@@ -3191,20 +3182,10 @@ function ConceptDialog({
             <span>Only for template-free models.</span>
           </label>
         )}
-        <div className="privacy-note">
-          <Icon name="code" size={16} />
-          <span>
-            Concept text and generation artifacts go to Codex through your
-            existing login. Local chats are not included. Dataset agents have no
-            command execution, web, memory, or connected apps.
-          </span>
-        </div>
         <div className="dialog-actions">
-          <span className="muted">
-            No approval pauses. Every stage is editable.
-          </span>
           <button
             className="button primary"
+            title="Generates examples through Codex; local chats stay local."
             disabled={
               !concept.trim() ||
               !modelId ||
@@ -3456,6 +3437,7 @@ function Inspector({
   busy,
   exportVector,
   raw,
+  targetModel,
   close,
   onVersion,
 }: {
@@ -3465,6 +3447,7 @@ function Inspector({
   busy: Set<string>;
   exportVector: (vector: Vector) => Promise<void>;
   raw: boolean;
+  targetModel?: Model;
   close: () => void;
   onVersion: (id: string) => void;
 }) {
@@ -3499,7 +3482,7 @@ function Inspector({
       onClose={close}
     >
       {!record ? (
-        <div className="note">
+        <div className="error-box">
           This record is not in the current snapshot. Close this inspector and
           refresh the connection.
         </div>
@@ -3630,10 +3613,8 @@ function Inspector({
                       </strong>
                     </div>
                     <div>
-                      <span>MODEL</span>
-                      <strong className="mono">
-                        {shortId(recipe.model_id)}
-                      </strong>
+                      <span>EXTRACTION TARGET</span>
+                      <strong>{targetModel?.name ?? "Select a model"}</strong>
                     </div>
                   </div>
                   <Warnings warnings={recipe.warnings} />
@@ -3641,10 +3622,6 @@ function Inspector({
                   <pre className="json-preview">{jsonText(recipe.stages)}</pre>
                   <h3 className="section-title">Agent roles</h3>
                   <pre className="json-preview">{jsonText(recipe.roles)}</pre>
-                  <div className="note">
-                    Editing a stage creates a new recipe version. Originals
-                    remain intact; only downstream products are invalidated.
-                  </div>
                   <p className="intro-text">
                     Saved method:{" "}
                     {recipe.extraction?.method === "paper"
@@ -3663,19 +3640,23 @@ function Inspector({
                     </button>
                     <button
                       className="button primary"
-                      disabled={busy.has("extract_recipe")}
+                      disabled={
+                        !targetModel ||
+                        recipe.draft === true ||
+                        busy.has("extract_recipe")
+                      }
                       onClick={() =>
                         void act(
                           "extract_recipe",
                           {
                             recipe_id: recipe.id,
-                            model_id: recipe.model_id,
+                            model_id: targetModel!.id,
                           },
-                          "Extraction requested for this exact recipe version.",
+                          `Extraction requested for ${targetModel!.name}; saved examples are reused.`,
                         )
                       }
                     >
-                      Extract this version
+                      Extract for selected model
                       <Icon name="bolt" size={14} />
                     </button>
                   </div>
@@ -3685,6 +3666,7 @@ function Inspector({
                     act={act}
                     busy={busy}
                     fallbackRaw={raw}
+                    targetModel={targetModel}
                   />
                 </>
               )}
@@ -3749,6 +3731,7 @@ function Inspector({
             <StageEditor
               key={recipe.id}
               recipe={recipe}
+              targetModel={targetModel}
               act={act}
               busy={busy}
               onVersion={onVersion}
@@ -3788,11 +3771,13 @@ function RecipeExtractionSettings({
   act,
   busy,
   fallbackRaw,
+  targetModel,
 }: {
   recipe: Recipe;
   act: Act;
   busy: Set<string>;
   fallbackRaw: boolean;
+  targetModel?: Model;
 }) {
   const [method, setMethod] = useState<"paper" | "completion">(
     recipe.extraction?.method ?? "completion",
@@ -3805,10 +3790,7 @@ function RecipeExtractionSettings({
     <details className="advanced-settings">
       <summary>Re-extract with different settings</summary>
       <p className="muted">
-        Creates an immutable recipe version if settings change. Existing text
-        and agent outputs are reused, not regenerated; completion-style datasets
-        may need editing before raw extraction. Coefficient restrictions and
-        preview settings are preserved.
+        Changed settings create a new recipe version. Saved examples are reused.
       </p>
       <label className="field">
         Extraction method for new version
@@ -3844,14 +3826,17 @@ function RecipeExtractionSettings({
       <button
         className="button secondary"
         disabled={
-          busy.has("extract_recipe") || (method === "paper" && !suffix.trim())
+          !targetModel ||
+          recipe.draft === true ||
+          busy.has("extract_recipe") ||
+          (method === "paper" && !suffix.trim())
         }
         onClick={() =>
           void act(
             "extract_recipe",
             {
               recipe_id: recipe.id,
-              model_id: recipe.model_id,
+              model_id: targetModel!.id,
               raw,
               extraction: {
                 method,
@@ -3867,17 +3852,29 @@ function RecipeExtractionSettings({
     </details>
   );
 }
-function Warnings({ warnings }: { warnings?: string[] }) {
-  return warnings?.length ? (
-    <div className="warnings">
-      <span className="eyebrow">ADVISORY, NOT A GATE</span>
-      <ul>
-        {warnings.map((warning, index) => (
-          <li key={index}>{warning}</li>
-        ))}
-      </ul>
-    </div>
-  ) : null;
+function Warnings({
+  warnings,
+  collapsible = true,
+}: {
+  warnings?: string[];
+  collapsible?: boolean;
+}) {
+  if (!warnings?.length) return null;
+  const notes = (
+    <ul>
+      {warnings.map((warning, index) => (
+        <li key={index}>{warning}</li>
+      ))}
+    </ul>
+  );
+  return collapsible ? (
+    <details className="warnings">
+      <summary>Diagnostics ({warnings.length})</summary>
+      {notes}
+    </details>
+  ) : (
+    <div className="warnings">{notes}</div>
+  );
 }
 
 function PreviewGallery({ previews }: { previews?: Json }) {
@@ -3945,12 +3942,14 @@ function StageEditor({
   job,
   act,
   busy,
+  targetModel,
   onVersion,
 }: {
   recipe?: Recipe;
   job?: Job;
   act: Act;
   busy: Set<string>;
+  targetModel?: Model;
   onVersion: (id: string) => void;
 }) {
   const refs = checkpointRefs(
@@ -4018,6 +4017,7 @@ function StageEditor({
   const stageValue = outputs[stage];
   const draft = drafts[stage] ?? jsonText(stageValue);
   const save = async () => {
+    if (!targetModel) return;
     setError("");
     let value: unknown;
     try {
@@ -4030,7 +4030,7 @@ function StageEditor({
     const identity = job ? { job_id: job.id } : { recipe_id: recipe?.id };
     const result = await act<{ id?: string; recipe_id?: string }>(
       action,
-      { ...identity, stage, value },
+      { ...identity, stage, value, model_id: targetModel.id },
       job
         ? "Checkpoint forked. Original job is unchanged; downstream work runs in a separate job."
         : "New recipe version saved. Only downstream products are regenerated.",
@@ -4040,7 +4040,7 @@ function StageEditor({
   };
   if (!recipe && !job)
     return (
-      <div className="note">
+      <div className="error-box">
         This source is not present in the current snapshot.
       </div>
     );
@@ -4097,11 +4097,7 @@ function StageEditor({
         )}
       </div>
       {!availableStages.length ? (
-        <div className="note">
-          Only completed or explicitly edited checkpoint outputs can be forked.
-          In-progress attempts are retained as provenance, not offered as
-          editable products.
-        </div>
+        <p className="muted small">No completed stages to edit yet.</p>
       ) : (
         <>
           <p className="muted small">
@@ -4136,11 +4132,15 @@ function StageEditor({
             <span className="muted">
               {job
                 ? "Forks a new recipe and job. Original work keeps running. Downstream stages may call Codex."
-                : "Creates a new version and resumes downstream jobs, including Codex review. Originals stay intact."}
+                : "Creates a new version and resumes downstream jobs, including Codex review. Originals stay intact."}{" "}
+              {targetModel
+                ? `Extraction targets ${targetModel.name}.`
+                : "Select a model for downstream extraction."}
             </span>
             <button
               className="button primary"
               disabled={
+                !targetModel ||
                 loading ||
                 busy.has(job ? "edit_job_stage" : "edit_recipe") ||
                 draft === jsonText(stageValue)
@@ -4186,12 +4186,7 @@ function MixtureDiagnostics({
           Applied revision {revision} · first affected output token{" "}
           {first_token_index}
         </p>
-        <p className="muted small">
-          This is the acknowledged engine mix, not pending slider positions.
-          Geometry is advisory; it does not establish semantic quality or
-          subjective intensity.
-        </p>
-        <Warnings warnings={geometry.warnings} />
+        <Warnings warnings={geometry.warnings} collapsible={false} />
         {layers.length ? (
           <table className="layer-table">
             <caption>Applied residual-space contributions</caption>
